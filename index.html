@@ -43,6 +43,16 @@
     <!-- Main Content Card -->
     <div class="w-full max-w-sm bg-white shadow-2xl rounded-xl p-6 md:p-10 border-4 border-red-600">
         
+        <!-- Title -->
+        <h1 id="countdownTitle" class="text-4xl christmas-font text-center font-bold text-red-700 mb-4">
+            Christmas Countdown Generator
+        </h1>
+        
+        <!-- Live Countdown Bar (UPDATED: Red color, Inter font, larger text) -->
+        <div id="liveCountdownBar" class="text-center bg-red-600 text-white p-3 rounded-xl shadow-lg mb-6 transition-all duration-300">
+            Loading countdown...
+        </div>
+
         <!-- Tab Navigation (Two Main Tabs: Holiday Selector and Custom Date) -->
         <div class="flex border-b border-gray-200 mb-6" id="selectionTabs">
             <button id="tab-preset_holiday" 
@@ -86,10 +96,6 @@
         </div>
         <!-- End Tab Content -->
 
-        <!-- Title -->
-        <h1 id="countdownTitle" class="text-4xl christmas-font text-center font-bold text-red-700 mb-4">
-            Christmas Countdown Generator
-        </h1>
         <p class="text-center text-gray-600 text-sm mb-6">
             Your static countdown image preview is below. Select your download options!
         </p>
@@ -192,6 +198,8 @@
         let currentHolidayKey = 'christmas'; 
         // Global state to track if the passcode has been successfully entered
         let isPasscodeUnlocked = false;
+        // Global variable for the live countdown timer
+        let countdownInterval; 
         
         // Define configuration for different holidays
         const HolidayConfigs = {
@@ -227,13 +235,53 @@
         }
 
         /**
+         * Helper function to get the precise future target Date object.
+         * Handles year rollover for non-custom dates.
+         * @returns {Date | null} The target date object, or null if invalid/missing.
+         */
+        function getTargetDate() {
+            const holidayKey = getActiveHolidayKey();
+            const config = HolidayConfigs[holidayKey];
+            if (!config) return null;
+
+            const today = new Date();
+            const currentYear = today.getFullYear();
+            let targetDate;
+
+            if (config.type === 'custom') {
+                const customDateString = document.getElementById('custom-target-date').value;
+                if (!customDateString) return null;
+                // Use custom date input, setting time to midnight (00:00:00)
+                targetDate = new Date(customDateString + 'T00:00:00'); 
+            } else if (config.type === 'fixed') {
+                targetDate = new Date(currentYear, config.month, config.day);
+            } else if (config.type === 'dynamic') {
+                targetDate = getDynamicHolidayDate(currentYear, config.month, config.week, config.dayOfWeek);
+            } else {
+                return null; // Unknown type
+            }
+            
+            // Check for year rollover for non-custom dates
+            // If the target date is in the past, roll it over to next year
+            if (config.type !== 'custom' && today.getTime() > targetDate.getTime()) {
+                if (config.type === 'fixed') {
+                    targetDate.setFullYear(currentYear + 1);
+                } else if (config.type === 'dynamic') {
+                    // Recalculate dynamic date for the next year
+                    targetDate = getDynamicHolidayDate(currentYear + 1, config.month, config.week, config.dayOfWeek);
+                }
+            }
+
+            return targetDate;
+        }
+
+        /**
          * Calculates the number of full days until the selected holiday.
+         * Used for the static canvas display.
          * @returns {number} The number of days remaining.
          */
         function calculateDaysUntilHoliday() {
-            const holidayKey = getActiveHolidayKey();
-            
-            // 1. Check for custom day count override (only works if passcode unlocked)
+            // 1. Check for custom day count override
             const customDaysContainer = document.getElementById('customDaysContainer');
             if (!customDaysContainer.classList.contains('hidden')) {
                 const customValue = parseInt(customDaysInput.value);
@@ -242,53 +290,76 @@
                 }
             }
             
-            // 2. Determine configuration based on the active selection mode
-            const config = HolidayConfigs[holidayKey];
-            if (!config) return 0;
+            const targetDate = getTargetDate(); // Use the new function to get the correct future date
+            if (!targetDate) return 0;
 
             const today = new Date();
-            const currentYear = today.getFullYear();
-            let holidayDate;
-
-            if (config.type === 'custom') {
-                const customDateString = document.getElementById('custom-target-date').value;
-                if (!customDateString) return 0;
-                
-                // Set to midnight UTC for accurate daily comparison
-                holidayDate = new Date(customDateString + 'T00:00:00'); 
-            } else if (config.type === 'fixed') {
-                holidayDate = new Date(currentYear, config.month, config.day);
-            } else if (config.type === 'dynamic') {
-                holidayDate = getDynamicHolidayDate(currentYear, config.month, config.week, config.dayOfWeek);
-            } else {
-                return 0; // Unknown type
-            }
-
-            // 3. Normalize today's date to midnight for accurate comparison
+            
+            // Normalize dates to midnight for accurate full-day calculation (floor/ceil is safer)
             const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-            
-            // 4. Handle year rollover for non-custom dates
-            if (config.type !== 'custom') {
-                 if (todayMidnight > holidayDate.getTime()) {
-                    if (config.type === 'fixed') {
-                        holidayDate.setFullYear(currentYear + 1);
-                    } else if (config.type === 'dynamic') {
-                        holidayDate = getDynamicHolidayDate(currentYear + 1, config.month, config.week, config.dayOfWeek);
-                    }
-                }
-            }
-            
-            // 5. Check if the holiday is today or has passed
-            const holidayMidnight = new Date(holidayDate.getFullYear(), holidayDate.getMonth(), holidayDate.getDate()).getTime();
+            const holidayMidnight = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
+
             if (todayMidnight >= holidayMidnight) {
                 return 0;
             }
 
-            // 6. Calculate the difference in full days
+            // Calculate the difference in full days
             const diffTime = holidayMidnight - todayMidnight;
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
             
             return Math.max(0, diffDays);
+        }
+
+        /**
+         * Updates the live countdown display in the top bar every second.
+         */
+        function updateLiveCountdown() {
+            const targetDate = getTargetDate();
+            const now = new Date().getTime();
+            const countdownBar = document.getElementById('liveCountdownBar');
+
+            if (!targetDate || now >= targetDate.getTime()) {
+                if (countdownInterval) clearInterval(countdownInterval);
+                countdownBar.innerHTML = '<span class="text-xl font-bold">🎉 Holiday is TODAY! Have Fun! 🎉</span>';
+                return;
+            }
+
+            const distance = targetDate.getTime() - now;
+
+            // Time constants
+            const oneSecond = 1000;
+            const oneMinute = oneSecond * 60;
+            const oneHour = oneMinute * 60;
+            const oneDay = oneHour * 24;
+
+            // Calculate remaining time components
+            let remainingDays = Math.floor(distance / oneDay);
+            let remainingHours = Math.floor((distance % oneDay) / oneHour);
+            let remainingMinutes = Math.floor((distance % oneHour) / oneMinute);
+            let remainingSeconds = Math.floor((distance % oneMinute) / oneSecond);
+
+            // Approximate Month Calculation (30 days)
+            const approxMonths = Math.floor(remainingDays / 30);
+            const displayDays = remainingDays % 30; 
+
+            // Helper for consistent unit formatting (UPDATED: Larger font for Inter)
+            const formatUnit = (value, unit) => {
+                const plural = value === 1 ? '' : 's';
+                return `<div><span class="font-black text-2xl">${value}</span><br><span class="text-sm font-semibold">${unit}${plural}</span></div>`;
+            };
+            
+            // Build the HTML for the countdown bar
+            const countdownHTML = `
+                <div class="flex justify-center space-x-2 md:space-x-4">
+                    ${formatUnit(approxMonths, 'Month')}
+                    ${formatUnit(displayDays, 'Day')}
+                    ${formatUnit(remainingHours, 'Hour')}
+                    ${formatUnit(remainingMinutes, 'Min')}
+                    ${formatUnit(remainingSeconds, 'Sec')}
+                </div>
+            `;
+
+            countdownBar.innerHTML = countdownHTML;
         }
 
         // The SECRET_PASSCODE is "1041"
@@ -350,7 +421,7 @@
                 }
             });
 
-            // 2. Update Content Area Visibility
+            // 2. Update Content Area Visibility and Defaults
             const presetContent = document.getElementById('content-preset_holiday');
             const customContent = document.getElementById('content-custom_date');
             
@@ -376,6 +447,12 @@
             
             // 3. Update Customization Lock State and Preview
             updateColorFontLockState();
+            
+            // 4. Reset and restart the live countdown for the new selection/mode
+            if (countdownInterval) clearInterval(countdownInterval);
+            updateLiveCountdown();
+            countdownInterval = setInterval(updateLiveCountdown, 1000);
+
             updatePreviewSize();
         }
 
@@ -671,6 +748,10 @@
             // 4. Add listeners to custom date inputs (only used when 'custom_date' tab is active)
             document.getElementById('custom-target-date').addEventListener('change', updatePreviewSize);
             document.getElementById('custom-target-date-label').addEventListener('input', updatePreviewSize);
+
+            // 5. Start the live countdown timer
+            updateLiveCountdown(); // Initial call
+            countdownInterval = setInterval(updateLiveCountdown, 1000);
         }
 
         // Initialize the canvas and start drawing when the window loads
